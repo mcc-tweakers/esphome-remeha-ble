@@ -39,8 +39,9 @@
 //    sub 1. Reading the wrong subindex returns a 0/sentinel. See RemehaItem.
 //
 //  TWO READ PATHS:
-//    - BULK (default): one GetList request lists every bulk object; the reply
-//      packs all of them (no per-record CRC) and is reassembled from fragments.
+//    - BULK (default): GetList requests of at most 100 objects each (as the PRO
+//      app does) list every bulk object; each reply packs its objects (no
+//      per-record CRC) and is reassembled from fragments.
 //    - SINGLE (read: single): an individual read request (op 0x00) per object,
 //      for scalars the appliance does not surface in the bulk GetList. Chained
 //      one-after-each-response so they finish inside one poll cycle.
@@ -783,21 +784,45 @@ void RemehaBle::canip_handshake_(const std::vector<uint8_t> &m) {
   }
 }
 
-void RemehaBle::build_request_() {
-  std::vector<uint8_t> &m = tx_msg_; m.clear();
-  // Bulk-read items only; single-read items are fetched one by one (see queue_individual_reads_).
-  uint8_t count = 0;
-  for (auto &it : items_) { if (!it.single && !it.missing && count < 255) count++; }
-  m.insert(m.end(), {0x01, 0x02, 0x00, 0x00, 0x00, 0x08, 0x00, count});
-  uint8_t done = 0;
+// The Remeha PRO app never asks for more than 100 objects in one GetList (seen in
+// its traffic: 147 objects went out as 100 + 47). A larger one got no answer at
+// all on an Elga Ace (255 objects); the count byte also caps a list at 255. So
+// the bulk objects are split into GetLists of at most GETLIST_MAX, sent one
+// after the other in the same cycle.
+static const uint8_t GETLIST_MAX = 100;
+
+std::vector<std::vector<uint8_t>> RemehaBle::build_requests_() {
+  std::vector<std::vector<uint8_t>> out;
+  std::vector<uint8_t> m;
+  uint8_t count = 0, batch = 0;
+  auto finish = [&]() {
+    if (count == 0) return;
+    m[7] = count;
+    uint16_t c = crc_modbus_(m.data(), m.size());
+    m.push_back((uint8_t)(c >> 8)); m.push_back((uint8_t)(c & 0xFF));
+    out.push_back(std::move(m));
+    m.clear(); count = 0; batch++;
+  };
   for (auto &it : items_) {
-    if (it.single || it.missing || done >= count) continue;
+    if (it.single || it.missing) continue;
+    // the same object for several entities is asked once
+    bool dup = false;
+    for (auto &o : items_) {
+      if (&o == &it) break;
+      if (!o.single && !o.missing && o.node == it.node && o.index == it.index && o.sub == it.sub) {
+        it.batch = o.batch; dup = true; break;
+      }
+    }
+    if (dup) continue;
+    if (count == GETLIST_MAX) finish();
+    if (count == 0) m.insert(m.end(), {0x01, 0x02, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00});
     m.push_back(0x00); m.push_back(it.node);
     m.push_back((uint8_t)(it.index >> 8)); m.push_back((uint8_t)(it.index & 0xFF)); m.push_back(it.sub);
-    done++;
+    it.batch = batch;
+    count++;
   }
-  uint16_t c = crc_modbus_(m.data(), m.size());
-  m.push_back((uint8_t)(c >> 8)); m.push_back((uint8_t)(c & 0xFF));
+  finish();
+  return out;
 }
 
 // Build an individual READ request (operation 0x00) for one object:
@@ -968,11 +993,15 @@ void RemehaBle::update() {
 
 // Start a fresh cycle: one bulk GetList, then queue the single-read items.
 void RemehaBle::start_poll_cycle_() {
-  build_request_();
-  tx_off_ = 0; tx_seq_ = 0; tx_busy_ = true; tx_start_ = millis();
-  ESP_LOGD(TAG, "polling: GetList (%d bytes), responses %u", (int) tx_msg_.size(), (unsigned) responses_);
+  auto lists = build_requests_();
   queue_individual_reads_();
-  send_next_fragment_();
+  if (lists.empty()) { send_next_individual_(); return; }
+  // the other GetLists go first in the queue, before the single reads; each one
+  // goes out after the answer to the previous request (see the NOTIFY chain)
+  indiv_q_.insert(indiv_q_.begin(), std::make_move_iterator(lists.begin() + 1), std::make_move_iterator(lists.end()));
+  ESP_LOGD(TAG, "polling: %u GetList(s), first %d bytes, responses %u", (unsigned) lists.size(),
+           (int) lists[0].size(), (unsigned) responses_);
+  start_tx_(std::move(lists[0]));
 }
 
 // Close the GATT link and reset state so ESPHome's ble_client reconnects cleanly.
@@ -1223,7 +1252,14 @@ void RemehaBle::parse_response_(const std::vector<uint8_t> &m) {
   }
 
   // Bulk GetList response. Each entry: <flag:1><node:1><idxHi:1><idxLo:1><sub:1><status:2><len:1><data:len>
-  for (auto &it : items_) it.seen = false;
+  // Which of the cycle's GetLists this answers: the batch of its first entry.
+  int batch = -1;
+  if (end >= 16) {
+    uint16_t i0 = (uint16_t)(m[10] << 8) | m[11];
+    for (auto &it : items_)
+      if (!it.single && !it.missing && it.node == m[9] && it.index == i0 && it.sub == m[12]) { batch = it.batch; break; }
+  }
+  for (auto &it : items_) if (it.batch == batch) it.seen = false;
   size_t i = 8;
   while (i + 8 <= end) {
     uint8_t flag = m[i];
@@ -1250,7 +1286,7 @@ void RemehaBle::parse_response_(const std::vector<uint8_t> &m) {
   // (missing, or a non-zero status) is switched to an individual read at once,
   // and read in this same cycle.
   for (auto &it : items_) {
-    if (it.single || !it.auto_read || it.missing) continue;
+    if (it.single || !it.auto_read || it.missing || batch < 0 || it.batch != batch) continue;
     if (it.seen) { it.miss = 0; continue; }
     if (++it.miss >= 1) {
       it.single = true;

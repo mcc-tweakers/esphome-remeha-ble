@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.2.3 (2026-11-24)
+
+- **Fix: many entities got no values.** All bulk objects went out in one GetList. With
+  more than about 100 objects the appliance did not answer it at all (seen on an Elga
+  Ace with 255), and the count byte also capped a list at 255, so any further objects
+  were silently left out. The bulk objects are now split into GetLists of at most 100
+  objects, as the Remeha PRO app does, sent one after the other in each poll cycle. An
+  object that several entities use is asked once.
+
 ## v2.2.2 (2026-11-23)
 
 - **Fix:** the board search logged every absent node (no answer) as a warning. Those

@@ -67,6 +67,7 @@ struct RemehaItem {
   // runtime state (not set from YAML)
   uint8_t miss{0};                   // auto: consecutive GetList replies without this object
   bool seen{false};                  // auto: value received in the current GetList reply
+  uint8_t batch{0};                  // which GetList of the cycle asks for it (at most 100 objects each)
   bool missing{false};               // appliance says the object does not exist: no longer polled
 };
 
@@ -293,7 +294,7 @@ class RemehaBle : public PollingComponent,
   void send_canip_body_(const uint8_t *body, size_t len);
   void enter_run_();
   uint32_t auth0_ms_{0};
-  void build_request_();
+  std::vector<std::vector<uint8_t>> build_requests_();  // bulk GetLists of at most GETLIST_MAX objects
   std::vector<uint8_t> build_read_frame_(uint8_t node, uint16_t index, uint8_t sub);  // individual read (op 0x00)
   std::vector<uint8_t> build_write_frame_(uint8_t node, uint16_t index, uint8_t sub, const std::vector<uint8_t> &data);
   void push_menu_steps_(uint8_t node);  // scan: select the menu format, then 0x502B:1..15
