@@ -8,6 +8,10 @@
   were silently left out. The bulk objects are now split into GetLists of at most 100
   objects, as the Remeha PRO app does, sent one after the other in each poll cycle. An
   object that several entities use is asked once.
+- **Fix: crash with many entities.** Every answer was copied, and the reassembly buffer
+  grew piece by piece; with a tight heap that crashed the ESP. The buffer is now
+  allocated once at start-up and handed over without a copy. Hundreds of entities still
+  need more memory than an ESP32 next to Bluetooth has: tick what you use.
 
 ## v2.2.2 (2026-11-23)
 

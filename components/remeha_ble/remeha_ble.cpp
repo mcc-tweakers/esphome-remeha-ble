@@ -192,6 +192,7 @@ static uint32_t le32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16
 static uint32_t be32(const uint8_t *p) { return (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]; }
 
 void RemehaBle::setup() {
+  rx_msg_.reserve(RX_MAX + 32);  // one reassembly buffer for the whole run (see NOTIFY)
   gate_svc_ = espbt::ESPBTUUID::from_raw(GATE_SVC);
   gate_1b_ = espbt::ESPBTUUID::from_raw(GATE_1B);
   gate_1d_ = espbt::ESPBTUUID::from_raw(GATE_1D);
@@ -658,7 +659,12 @@ void RemehaBle::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t ga
           break;
         }
         rx_next_ = 0;
-        auto m = rx_msg_; rx_msg_.clear();
+        // Hand the buffer over without a copy and take it back afterwards, so the
+        // reassembly buffer is allocated once (setup) instead of per answer: with
+        // many entities the heap is tight, and growing or copying a 1-2 kB vector
+        // here crashed the ESP (seen with 5 GetLists on an Elga Ace).
+        std::vector<uint8_t> m = std::move(rx_msg_);
+        rx_msg_.clear();
         if (st_ == ST_RUN) {
           responses_++;
           last_rx_ = millis();   // link is alive (feeds the RUN watchdog)
@@ -669,6 +675,8 @@ void RemehaBle::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t ga
           if (tx_busy_) chain_next_ = true;
           else send_next_individual_();
         } else { ESP_LOGD(TAG, "<< canip %s", tohex(m.data(), m.size()).c_str()); canip_handshake_(m); }
+        m.clear();
+        rx_msg_ = std::move(m);  // keeps its capacity for the next answer
       }
       break;
     }
