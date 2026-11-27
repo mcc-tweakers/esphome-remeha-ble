@@ -12,6 +12,10 @@
   grew piece by piece; with a tight heap that crashed the ESP. The buffer is now
   allocated once at start-up and handed over without a copy. Hundreds of entities still
   need more memory than an ESP32 next to Bluetooth has: tick what you use.
+- After connecting, the limits for settings are read from menu blocks 1-5 only (the
+  settings) instead of 1-20: blocks 6-15 hold measurements and counters, 16-20 do not
+  exist. A quarter of the reads, and less memory at a busy moment. The log line shows
+  the free heap.
 
 ## v2.2.2 (2026-11-23)
 

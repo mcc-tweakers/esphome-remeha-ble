@@ -1335,10 +1335,14 @@ void RemehaBle::start_menu_read_() {
     // as the PRO app does: select menu format 2 (0x502D), otherwise a board can
     // answer every block with "general error" (seen on a Confida 40 after a restart)
     menu_q_.push_back(build_write_frame_(n, 0x502D, 0, {MENU_FORMAT}));
-    for (uint8_t s = 1; s <= 20; s++) { menu_q_.push_back(build_read_frame_(n, 0x502B, s)); menu_left_++; }
+    // Only blocks 1-5: the settings per access level 1-5 (6-10 are measurements,
+    // 11-15 counters, 16+ do not exist). Limits are only needed for settings, and
+    // each block can be 2 kB: with many entities the heap is tight.
+    for (uint8_t s = 1; s <= 5; s++) { menu_q_.push_back(build_read_frame_(n, 0x502B, s)); menu_left_++; }
   }
-  ESP_LOGI(TAG, "menubeschrijving (0x502B) lezen voor de grenzen van instellingen (%u blokken)",
-           (unsigned) menu_left_);
+  ESP_LOGI(TAG, "menubeschrijving (0x502B) lezen voor de grenzen van instellingen (%u blokken), vrij geheugen %u (grootste blok %u)",
+           (unsigned) menu_left_, (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
+           (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 }
 
 // One 15-byte record of 0x502B: <2><index:2 LE><min:4 LE><max:4 LE><sub><step><level>.
