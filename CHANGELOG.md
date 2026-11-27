@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.2.3 (2026-11-24)
+## v2.2.3 (2026-11-27)
 
 - **Fix: many entities got no values.** All bulk objects went out in one GetList. With
   more than about 100 objects the appliance did not answer it at all (seen on an Elga
